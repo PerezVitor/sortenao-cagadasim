@@ -157,3 +157,157 @@ export const toggleUserBlock = createServerFn({ method: "POST" })
     if (error) throw error;
     return { ok: true };
   });
+
+// ---------- Admin user management ----------
+
+export const listAdminUsers = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    await assertAdmin(context.supabase, context.userId);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    const [profilesRes, predsRes, authRes] = await Promise.all([
+      supabaseAdmin.from("profiles").select("*").order("total_points", { ascending: false }),
+      supabaseAdmin.from("predictions").select("user_id"),
+      supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+    ]);
+    const counts = new Map<string, number>();
+    for (const p of predsRes.data ?? []) counts.set(p.user_id, (counts.get(p.user_id) ?? 0) + 1);
+    const authMap = new Map<string, { email: string | undefined; created_at: string }>();
+    for (const u of authRes.data?.users ?? []) authMap.set(u.id, { email: u.email, created_at: u.created_at });
+
+    return (profilesRes.data ?? []).map((p: any) => ({
+      ...p,
+      email: authMap.get(p.id)?.email ?? null,
+      auth_created_at: authMap.get(p.id)?.created_at ?? p.created_at,
+      predictions_count: counts.get(p.id) ?? 0,
+    }));
+  });
+
+export const adminUpdateUser = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z.object({
+      user_id: z.string().uuid(),
+      full_name: z.string().min(1).optional(),
+      nickname: z.string().min(1).optional(),
+      email: z.string().email().optional(),
+      password: z.string().min(6).optional(),
+      blocked: z.boolean().optional(),
+    }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    await assertAdmin(context.supabase, context.userId);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    const profilePatch: any = {};
+    if (data.full_name !== undefined) profilePatch.full_name = data.full_name;
+    if (data.nickname !== undefined) profilePatch.nickname = data.nickname;
+    if (data.blocked !== undefined) profilePatch.blocked = data.blocked;
+    if (Object.keys(profilePatch).length) {
+      const { error } = await supabaseAdmin.from("profiles").update(profilePatch).eq("id", data.user_id);
+      if (error) throw error;
+    }
+
+    const authPatch: any = {};
+    if (data.email) authPatch.email = data.email;
+    if (data.password) authPatch.password = data.password;
+    if (Object.keys(authPatch).length) {
+      const { error } = await supabaseAdmin.auth.admin.updateUserById(data.user_id, authPatch);
+      if (error) throw error;
+    }
+    return { ok: true };
+  });
+
+export const adminDeleteUser = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ user_id: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    await assertAdmin(context.supabase, context.userId);
+    if (data.user_id === context.userId) throw new Error("Você não pode excluir a si mesmo.");
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    // Deleting from auth.users cascades to public.profiles (FK on delete cascade);
+    // related predictions / achievements / tournament_predictions cascade via profile FK chain.
+    const { error } = await supabaseAdmin.auth.admin.deleteUser(data.user_id);
+    if (error) throw error;
+    return { ok: true };
+  });
+
+// ---------- Football-Data.org sync ----------
+
+type FDMatch = {
+  id: number;
+  utcDate: string;
+  status: string;
+  homeTeam: { tla: string | null; name: string };
+  awayTeam: { tla: string | null; name: string };
+  score: { fullTime: { home: number | null; away: number | null } };
+};
+
+async function fetchFinishedMatches(apiKey: string): Promise<FDMatch[]> {
+  const res = await fetch("https://api.football-data.org/v4/competitions/WC/matches?status=FINISHED", {
+    headers: { "X-Auth-Token": apiKey },
+  });
+  if (!res.ok) throw new Error(`Football-Data API ${res.status}: ${await res.text()}`);
+  const json = await res.json();
+  return json.matches ?? [];
+}
+
+async function performSync(supabase: any) {
+  const apiKey = process.env.FOOTBALL_DATA_API_KEY;
+  if (!apiKey) throw new Error("FOOTBALL_DATA_API_KEY ausente.");
+
+  const remote = await fetchFinishedMatches(apiKey);
+  const { data: localMatches } = await supabase
+    .from("matches")
+    .select("id,external_id,kickoff_at,manual_override,status,home:home_team_id(sigla),away:away_team_id(sigla)");
+
+  let updated = 0;
+  const nowIso = new Date().toISOString();
+
+  for (const r of remote) {
+    const home = r.score.fullTime.home;
+    const away = r.score.fullTime.away;
+    if (home == null || away == null) continue;
+
+    // 1) Match by stored external_id
+    let target = (localMatches ?? []).find((m: any) => m.external_id === r.id);
+    // 2) Otherwise match by sigla pair + same UTC day
+    if (!target) {
+      const remoteDay = r.utcDate.slice(0, 10);
+      target = (localMatches ?? []).find((m: any) => {
+        if (!m.home?.sigla || !m.away?.sigla || !r.homeTeam.tla || !r.awayTeam.tla) return false;
+        if (m.home.sigla.toUpperCase() !== r.homeTeam.tla.toUpperCase()) return false;
+        if (m.away.sigla.toUpperCase() !== r.awayTeam.tla.toUpperCase()) return false;
+        return (m.kickoff_at as string).slice(0, 10) === remoteDay;
+      });
+    }
+    if (!target) continue;
+    if (target.manual_override) continue;
+
+    const { error } = await supabase
+      .from("matches")
+      .update({
+        external_id: r.id,
+        home_score: home,
+        away_score: away,
+        status: "finished",
+        last_synced_at: nowIso,
+      })
+      .eq("id", target.id);
+    if (!error) updated++;
+  }
+
+  return { updated, fetched: remote.length };
+}
+
+export const syncResultsNow = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    await assertAdmin(context.supabase, context.userId);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const result = await performSync(supabaseAdmin);
+    return result;
+  });
+
+export { performSync as _performSync };
