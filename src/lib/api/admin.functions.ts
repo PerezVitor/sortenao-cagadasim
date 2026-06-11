@@ -235,79 +235,10 @@ export const adminDeleteUser = createServerFn({ method: "POST" })
 
 // ---------- Football-Data.org sync ----------
 
-type FDMatch = {
-  id: number;
-  utcDate: string;
-  status: string;
-  homeTeam: { tla: string | null; name: string };
-  awayTeam: { tla: string | null; name: string };
-  score: { fullTime: { home: number | null; away: number | null } };
-};
-
-async function fetchFinishedMatches(apiKey: string): Promise<FDMatch[]> {
-  const res = await fetch("https://api.football-data.org/v4/competitions/WC/matches?status=FINISHED", {
-    headers: { "X-Auth-Token": apiKey },
-  });
-  if (!res.ok) throw new Error(`Football-Data API ${res.status}: ${await res.text()}`);
-  const json = await res.json();
-  return json.matches ?? [];
-}
-
-async function performSync(supabase: any) {
-  const apiKey = process.env.FOOTBALL_DATA_API_KEY;
-  if (!apiKey) throw new Error("FOOTBALL_DATA_API_KEY ausente.");
-
-  const remote = await fetchFinishedMatches(apiKey);
-  const { data: localMatches } = await supabase
-    .from("matches")
-    .select("id,external_id,kickoff_at,manual_override,status,home:home_team_id(sigla),away:away_team_id(sigla)");
-
-  let updated = 0;
-  const nowIso = new Date().toISOString();
-
-  for (const r of remote) {
-    const home = r.score.fullTime.home;
-    const away = r.score.fullTime.away;
-    if (home == null || away == null) continue;
-
-    // 1) Match by stored external_id
-    let target = (localMatches ?? []).find((m: any) => m.external_id === r.id);
-    // 2) Otherwise match by sigla pair + same UTC day
-    if (!target) {
-      const remoteDay = r.utcDate.slice(0, 10);
-      target = (localMatches ?? []).find((m: any) => {
-        if (!m.home?.sigla || !m.away?.sigla || !r.homeTeam.tla || !r.awayTeam.tla) return false;
-        if (m.home.sigla.toUpperCase() !== r.homeTeam.tla.toUpperCase()) return false;
-        if (m.away.sigla.toUpperCase() !== r.awayTeam.tla.toUpperCase()) return false;
-        return (m.kickoff_at as string).slice(0, 10) === remoteDay;
-      });
-    }
-    if (!target) continue;
-    if (target.manual_override) continue;
-
-    const { error } = await supabase
-      .from("matches")
-      .update({
-        external_id: r.id,
-        home_score: home,
-        away_score: away,
-        status: "finished",
-        last_synced_at: nowIso,
-      })
-      .eq("id", target.id);
-    if (!error) updated++;
-  }
-
-  return { updated, fetched: remote.length };
-}
-
 export const syncResultsNow = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     await assertAdmin(context.supabase, context.userId);
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const result = await performSync(supabaseAdmin);
-    return result;
+    const { syncFootballDataResults } = await import("@/lib/api/sync-results.server");
+    return await syncFootballDataResults();
   });
-
-export { performSync as _performSync };
