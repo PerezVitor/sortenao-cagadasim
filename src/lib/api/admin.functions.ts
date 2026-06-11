@@ -157,3 +157,88 @@ export const toggleUserBlock = createServerFn({ method: "POST" })
     if (error) throw error;
     return { ok: true };
   });
+
+// ---------- Admin user management ----------
+
+export const listAdminUsers = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    await assertAdmin(context.supabase, context.userId);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    const [profilesRes, predsRes, authRes] = await Promise.all([
+      supabaseAdmin.from("profiles").select("*").order("total_points", { ascending: false }),
+      supabaseAdmin.from("predictions").select("user_id"),
+      supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+    ]);
+    const counts = new Map<string, number>();
+    for (const p of predsRes.data ?? []) counts.set(p.user_id, (counts.get(p.user_id) ?? 0) + 1);
+    const authMap = new Map<string, { email: string | undefined; created_at: string }>();
+    for (const u of authRes.data?.users ?? []) authMap.set(u.id, { email: u.email, created_at: u.created_at });
+
+    return (profilesRes.data ?? []).map((p: any) => ({
+      ...p,
+      email: authMap.get(p.id)?.email ?? null,
+      auth_created_at: authMap.get(p.id)?.created_at ?? p.created_at,
+      predictions_count: counts.get(p.id) ?? 0,
+    }));
+  });
+
+export const adminUpdateUser = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z.object({
+      user_id: z.string().uuid(),
+      full_name: z.string().min(1).optional(),
+      nickname: z.string().min(1).optional(),
+      email: z.string().email().optional(),
+      password: z.string().min(6).optional(),
+      blocked: z.boolean().optional(),
+    }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    await assertAdmin(context.supabase, context.userId);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    const profilePatch: any = {};
+    if (data.full_name !== undefined) profilePatch.full_name = data.full_name;
+    if (data.nickname !== undefined) profilePatch.nickname = data.nickname;
+    if (data.blocked !== undefined) profilePatch.blocked = data.blocked;
+    if (Object.keys(profilePatch).length) {
+      const { error } = await supabaseAdmin.from("profiles").update(profilePatch).eq("id", data.user_id);
+      if (error) throw error;
+    }
+
+    const authPatch: any = {};
+    if (data.email) authPatch.email = data.email;
+    if (data.password) authPatch.password = data.password;
+    if (Object.keys(authPatch).length) {
+      const { error } = await supabaseAdmin.auth.admin.updateUserById(data.user_id, authPatch);
+      if (error) throw error;
+    }
+    return { ok: true };
+  });
+
+export const adminDeleteUser = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ user_id: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    await assertAdmin(context.supabase, context.userId);
+    if (data.user_id === context.userId) throw new Error("Você não pode excluir a si mesmo.");
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    // Deleting from auth.users cascades to public.profiles (FK on delete cascade);
+    // related predictions / achievements / tournament_predictions cascade via profile FK chain.
+    const { error } = await supabaseAdmin.auth.admin.deleteUser(data.user_id);
+    if (error) throw error;
+    return { ok: true };
+  });
+
+// ---------- Football-Data.org sync ----------
+
+export const syncResultsNow = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    await assertAdmin(context.supabase, context.userId);
+    const { syncFootballDataResults } = await import("@/lib/api/sync-results.server");
+    return await syncFootballDataResults();
+  });
