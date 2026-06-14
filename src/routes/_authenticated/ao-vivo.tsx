@@ -9,6 +9,29 @@ export const Route = createFileRoute("/_authenticated/ao-vivo")({
   component: LivePage,
 });
 
+function getPositionMovement(currentPosition: number | null, simulatedPosition: number) {
+  if (currentPosition === null) {
+    return { label: "—", className: "text-slate-500" };
+  }
+
+  const difference = currentPosition - simulatedPosition;
+  if (difference > 0) {
+    return {
+      label: `↑ +${difference} ${difference === 1 ? "posição" : "posições"}`,
+      className: "text-grass",
+    };
+  }
+  if (difference < 0) {
+    const positions = Math.abs(difference);
+    return {
+      label: `↓ -${positions} ${positions === 1 ? "posição" : "posições"}`,
+      className: "text-victory",
+    };
+  }
+
+  return { label: "—", className: "text-slate-500" };
+}
+
 function LivePage() {
   const loadLivePreview = useServerFn(getLiveMatchPreview);
   const [data, setData] = useState<Awaited<ReturnType<typeof getLiveMatchPreview>> | null>(null);
@@ -112,25 +135,53 @@ function LivePage() {
             </div>
 
             <div>
-              <h2 className="font-display text-2xl uppercase italic mb-3">Se Terminar Assim</h2>
+              <h2 className="font-display text-2xl uppercase italic mb-3">🏆 Ranking Ao Vivo</h2>
               <div className="space-y-2">
-                {match.provisional_ranking.map((participant) => (
-                  <div key={participant.id} className="bg-white/5 border border-white/10 p-4 flex items-center gap-3">
-                    <span className="font-display text-2xl w-10 text-center">{participant.simulated_position}</span>
-                    <div className="min-w-0 flex-1">
-                      <div className={`truncate text-sm font-bold uppercase ${participant.is_current_user ? "text-gold" : ""}`}>
-                        {participant.nickname}
-                        {participant.is_current_user ? " · Você" : ""}
+                {[...match.provisional_ranking]
+                  .sort((a, b) => a.simulated_position - b.simulated_position)
+                  .map((participant) => {
+                    const movement = getPositionMovement(
+                      participant.current_position,
+                      participant.simulated_position,
+                    );
+
+                    return (
+                      <div
+                        key={participant.id}
+                        className={`border p-4 flex items-center gap-3 ${
+                          participant.is_current_user
+                            ? "border-gold/60 bg-gold/10 ring-1 ring-gold/20"
+                            : "border-white/10 bg-white/5"
+                        }`}
+                      >
+                        <span className="font-display text-2xl w-10 text-center">
+                          {participant.simulated_position}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div
+                            className={`truncate text-sm font-bold uppercase ${
+                              participant.is_current_user ? "text-gold" : ""
+                            }`}
+                          >
+                            {participant.nickname}
+                            {participant.is_current_user ? " · Você" : ""}
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-bold uppercase tracking-widest">
+                            <span className={movement.className}>{movement.label}</span>
+                            <span className="text-slate-500">
+                              Atual: {participant.current_position === null ? "—" : `${participant.current_position}º`}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-[10px] uppercase tracking-widest text-slate-500">
+                            {participant.total_points} pontos + {participant.provisional_gain} provisórios
+                          </div>
+                        </div>
+                        <span className="flex items-center gap-1 font-display text-2xl text-grass">
+                          <Trophy className="size-4" /> {participant.provisional_total_points}
+                        </span>
                       </div>
-                      <div className="text-[10px] uppercase tracking-widest text-slate-500">
-                        Atual: {participant.current_position ?? "—"}º · Ganho provisório: +{participant.provisional_gain}
-                      </div>
-                    </div>
-                    <span className="flex items-center gap-1 font-display text-2xl text-grass">
-                      <Trophy className="size-4" /> {participant.provisional_total_points}
-                    </span>
-                  </div>
-                ))}
+                    );
+                  })}
               </div>
             </div>
           </div>
