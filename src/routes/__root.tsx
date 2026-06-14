@@ -11,6 +11,7 @@ import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
+import { registerServiceWorker } from "../lib/pwa/register-service-worker";
 import { Toaster } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -128,6 +129,8 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   const router = useRouter();
   useEffect(() => {
+    registerServiceWorker();
+
     // Injeta a fonte "Twemoji Mozilla" para renderizar bandeiras no Windows/Chrome
     import("country-flag-emoji-polyfill").then(({ polyfillCountryFlagEmojis }) =>
       polyfillCountryFlagEmojis(),
