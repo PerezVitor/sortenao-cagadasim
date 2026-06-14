@@ -3,7 +3,20 @@ import { useEffect, useState } from "react";
 import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Header } from "@/components/app/Header";
-import { Trophy, Target, Medal, DollarSign, Copy, Check, Smartphone, User } from "lucide-react";
+import { Flag } from "@/components/app/Flag";
+import {
+  Trophy,
+  Target,
+  Medal,
+  DollarSign,
+  Copy,
+  Check,
+  Smartphone,
+  User,
+  Radio,
+  ListChecks,
+  BarChart3,
+} from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -86,17 +99,219 @@ function CopyPixButton() {
   );
 }
 
+type MatchSummary = {
+  id: string;
+  kickoff_at: string;
+  home_score: number | null;
+  away_score: number | null;
+  home_placeholder: string | null;
+  away_placeholder: string | null;
+  home: { name: string; sigla: string; flag: string | null } | null;
+  away: { name: string; sigla: string; flag: string | null } | null;
+};
+
+type AuthenticatedHeroData = {
+  liveMatch: MatchSummary | null;
+  nextMatch: MatchSummary | null;
+  position: number | null;
+  points: number;
+};
+
+function normalizeMatch(match: any): MatchSummary | null {
+  if (!match) return null;
+  return {
+    ...match,
+    home: Array.isArray(match.home) ? (match.home[0] ?? null) : match.home,
+    away: Array.isArray(match.away) ? (match.away[0] ?? null) : match.away,
+  };
+}
+
+function formatNextKickoff(kickoffAt: string) {
+  const kickoff = new Date(kickoffAt);
+  const today = new Date();
+  const isToday =
+    kickoff.getFullYear() === today.getFullYear() &&
+    kickoff.getMonth() === today.getMonth() &&
+    kickoff.getDate() === today.getDate();
+  const time = kickoff.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+  if (isToday) return `Hoje às ${time}`;
+  return kickoff.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function AuthenticatedHero({ data }: { data: AuthenticatedHeroData }) {
+  const match = data.liveMatch ?? data.nextMatch;
+  const isLive = data.liveMatch !== null;
+  const shortcuts = [
+    { to: "/palpites", label: "Palpites", icon: ListChecks },
+    { to: "/ranking", label: "Ranking", icon: BarChart3 },
+    { to: "/ao-vivo", label: "Ao Vivo", icon: Radio },
+    { to: "/perfil", label: "Perfil", icon: User },
+  ] as const;
+
+  return (
+    <header className="relative overflow-hidden px-4 pb-12 pt-8 sm:px-6 sm:pb-16 sm:pt-12">
+      <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_top,var(--grass),transparent_65%)] opacity-20" />
+      <div className="relative z-10 mx-auto max-w-xl">
+        <div className="mb-5 flex items-center gap-2">
+          {isLive ? <Radio className="size-4 text-victory" /> : <Trophy className="size-4 text-grass" />}
+          <span className={`text-xs font-black uppercase tracking-[0.2em] ${isLive ? "text-victory" : "text-grass"}`}>
+            {isLive ? "Ao Vivo" : "Copa em andamento"}
+          </span>
+        </div>
+
+        <div className="border border-white/10 bg-white/5 p-5 sm:p-6">
+          {!isLive && <p className="mb-4 text-[10px] font-bold uppercase tracking-widest text-slate-500">Próximo jogo</p>}
+          {match ? (
+            <>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+                <Flag
+                  showName
+                  className="justify-self-start"
+                  flag={match.home?.flag}
+                  name={match.home?.name ?? match.home_placeholder}
+                  sigla={match.home?.sigla ?? match.home_placeholder}
+                />
+                <span className="whitespace-nowrap font-display text-3xl sm:text-5xl">
+                  {isLive ? `${match.home_score ?? "-"} x ${match.away_score ?? "-"}` : "x"}
+                </span>
+                <Flag
+                  showName
+                  className="justify-self-end text-right"
+                  flag={match.away?.flag}
+                  name={match.away?.name ?? match.away_placeholder}
+                  sigla={match.away?.sigla ?? match.away_placeholder}
+                />
+              </div>
+              <p className="mt-4 text-center text-xs font-bold uppercase tracking-widest text-slate-400">
+                {isLive ? "Em andamento" : formatNextKickoff(match.kickoff_at)}
+              </p>
+            </>
+          ) : (
+            <p className="py-4 text-center text-sm font-bold uppercase tracking-widest text-slate-400">
+              Nenhum próximo jogo agendado
+            </p>
+          )}
+        </div>
+
+        {isLive && (
+          <Link
+            to="/ao-vivo"
+            className="mt-3 block w-full bg-victory py-4 text-center text-sm font-black uppercase tracking-widest text-white transition-all hover:brightness-110 active:scale-[0.98]"
+          >
+            Ver Ao Vivo
+          </Link>
+        )}
+
+        <div className="my-5 grid grid-cols-2 gap-3">
+          <div className="border border-white/10 bg-white/5 p-4">
+            <span className="block text-[10px] font-bold uppercase tracking-widest text-slate-500">Posição</span>
+            <span className="font-display text-3xl">#{data.position ?? "—"}</span>
+          </div>
+          <div className="border border-white/10 bg-white/5 p-4">
+            <span className="block text-[10px] font-bold uppercase tracking-widest text-slate-500">Pontos</span>
+            <span className="font-display text-3xl">{data.points}</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          {shortcuts.map(({ to, label, icon: Icon }) => (
+            <Link
+              key={to}
+              to={to}
+              className="flex min-h-20 items-center justify-center gap-2 border border-white/10 bg-white/5 px-3 py-4 text-xs font-black uppercase tracking-widest text-slate-300 transition-colors hover:border-grass/40 hover:text-grass"
+            >
+              <Icon className="size-4" />
+              {label}
+            </Link>
+          ))}
+        </div>
+      </div>
+    </header>
+  );
+}
+
 function Landing() {
   const { data } = useSuspenseQuery(landingQuery);
   const cd = useCountdown(data.cupStart);
+  const [authResolved, setAuthResolved] = useState(false);
+  const [authenticatedHero, setAuthenticatedHero] = useState<AuthenticatedHeroData | null>(null);
   const podium = data.ranking.slice(0, 3);
   const rest = data.ranking.slice(3);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadAuthenticatedHero() {
+      const { data: authData } = await supabase.auth.getUser();
+      const user = authData.user;
+      if (!user) {
+        if (active) setAuthResolved(true);
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const matchSelect =
+        "id,kickoff_at,home_score,away_score,home_placeholder,away_placeholder,home:home_team_id(name,sigla,flag),away:away_team_id(name,sigla,flag)";
+      const [profile, ranking, liveMatch, nextMatch] = await Promise.all([
+        supabase.from("profiles").select("total_points").eq("id", user.id).single(),
+        supabase.rpc("get_leaderboard"),
+        supabase
+          .from("matches")
+          .select(matchSelect)
+          .lte("kickoff_at", nowIso)
+          .neq("status", "finished")
+          .order("kickoff_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        supabase
+          .from("matches")
+          .select(matchSelect)
+          .gt("kickoff_at", nowIso)
+          .neq("status", "finished")
+          .order("kickoff_at")
+          .limit(1)
+          .maybeSingle(),
+      ]);
+
+      if (!active) return;
+      const positionIndex = ranking.error
+        ? -1
+        : (ranking.data ?? []).findIndex((participant: any) => participant.id === user.id);
+      setAuthenticatedHero({
+        liveMatch: normalizeMatch(liveMatch.data),
+        nextMatch: normalizeMatch(nextMatch.data),
+        position: positionIndex >= 0 ? positionIndex + 1 : null,
+        points: profile.data?.total_points ?? 0,
+      });
+      setAuthResolved(true);
+    }
+
+    loadAuthenticatedHero().catch(() => {
+      if (active) setAuthResolved(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-night text-white selection:bg-grass selection:text-night">
       <Header />
 
       {/* HERO */}
+      {!authResolved ? (
+        <header className="px-4 pb-12 pt-8 sm:px-6 sm:pb-16 sm:pt-12">
+          <div className="mx-auto h-[28rem] max-w-xl animate-pulse bg-white/5" />
+        </header>
+      ) : authenticatedHero ? (
+        <AuthenticatedHero data={authenticatedHero} />
+      ) : (
       <header className="relative overflow-hidden pt-12 pb-20 px-6">
         <div className="absolute inset-0 opacity-25 pointer-events-none bg-[radial-gradient(ellipse_at_top,var(--grass),transparent_60%)]" />
         <div className="relative z-10 max-w-xl mx-auto text-center md:text-left">
@@ -124,6 +339,7 @@ function Landing() {
           </Link>
         </div>
       </header>
+      )}
 
       {/* STATS */}
       <section className="px-6 py-12 bg-white/5 border-y border-white/10">
