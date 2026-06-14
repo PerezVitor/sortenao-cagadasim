@@ -75,7 +75,21 @@ export default defineConfig({
   // Required for self-hosted deploy (Vercel, Netlify, etc.): without Lovable sandbox
   // context the Nitro plugin is skipped and only dist/client + dist/server are emitted —
   // Vercel needs Nitro's .vercel/output with serverless handlers for SSR routes.
-  nitro: true,
+  nitro: {
+    routeRules: {
+      "/sw.js": {
+        headers: {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+      },
+      "/manifest.webmanifest": {
+        headers: {
+          "Content-Type": "application/manifest+json",
+        },
+      },
+    },
+  },
   tanstackStart: {
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this
