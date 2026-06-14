@@ -10,7 +10,8 @@ import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
 // Vite loadEnv never overwrites keys already in process.env. Cursor/Lovable may inject
 // stale placeholders (e.g. VITE_SUPABASE_PUBLISHABLE_KEY=SUA_ANON_KEY) into the dev
-// server process — force .env values locally so import.meta.env matches the file.
+// server process — locally, let .env win only for missing/placeholder values.
+// On Vercel/CI, trust the platform env and never read .env over process.env.
 const SUPABASE_ENV_KEYS = [
   "VITE_SUPABASE_URL",
   "VITE_SUPABASE_PUBLISHABLE_KEY",
@@ -19,8 +20,27 @@ const SUPABASE_ENV_KEYS = [
   "SUPABASE_SERVICE_ROLE_KEY",
 ] as const;
 
+const PLACEHOLDER_PATTERNS = [/^SUA_/i, /^YOUR_/i, /^CHANGE_ME/i, /^REPLACE_/i];
+
+function isCiOrRemoteBuild() {
+  return (
+    process.env.VERCEL === "1" ||
+    process.env.VERCEL === "true" ||
+    process.env.CI === "true" ||
+    process.env.CI === "1"
+  );
+}
+
+function shouldOverrideFromDotEnv(key: string, current: string | undefined) {
+  if (current === undefined || current.trim() === "") return true;
+  const trimmed = current.trim();
+  if (PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(trimmed))) return true;
+  if (key.includes("URL") && !/^https?:\/\//i.test(trimmed)) return true;
+  return false;
+}
+
 function applyLocalDotEnvOverrides() {
-  if (process.env.LOVABLE_SANDBOX === "1") return;
+  if (process.env.LOVABLE_SANDBOX === "1" || isCiOrRemoteBuild()) return;
 
   let content: string;
   try {
@@ -29,6 +49,7 @@ function applyLocalDotEnvOverrides() {
     return;
   }
 
+  const fileValues = new Map<string, string>();
   for (const line of content.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
@@ -36,7 +57,15 @@ function applyLocalDotEnvOverrides() {
     if (eq === -1) continue;
     const key = trimmed.slice(0, eq).trim();
     if (!(SUPABASE_ENV_KEYS as readonly string[]).includes(key)) continue;
-    process.env[key] = trimmed.slice(eq + 1).trim();
+    fileValues.set(key, trimmed.slice(eq + 1).trim());
+  }
+
+  for (const key of SUPABASE_ENV_KEYS) {
+    const fileValue = fileValues.get(key);
+    if (!fileValue) continue;
+    if (shouldOverrideFromDotEnv(key, process.env[key])) {
+      process.env[key] = fileValue;
+    }
   }
 }
 
