@@ -54,6 +54,7 @@ export const getLiveMatchPreview = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const nowIso = new Date().toISOString();
 
     const [
       { data: liveMatches, error: liveMatchesError },
@@ -64,7 +65,8 @@ export const getLiveMatchPreview = createServerFn({ method: "GET" })
         .select(
           "id,phase,status,kickoff_at,home_score,away_score,home_placeholder,away_placeholder,home:home_team_id(name,sigla,flag),away:away_team_id(name,sigla,flag)",
         )
-        .eq("status", "live")
+        .lte("kickoff_at", nowIso)
+        .neq("status", "finished")
         .order("kickoff_at"),
       supabaseAdmin
         .from("leaderboard_entries")
@@ -164,6 +166,7 @@ export const getLiveMatchPreview = createServerFn({ method: "GET" })
 
       return {
         ...match,
+        status: "live" as const,
         home: Array.isArray(match.home) ? (match.home[0] ?? null) : match.home,
         away: Array.isArray(match.away) ? (match.away[0] ?? null) : match.away,
         participants: participantsWithPreview.map(
