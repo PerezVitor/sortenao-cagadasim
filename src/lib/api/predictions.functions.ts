@@ -50,6 +50,132 @@ function pointsForMatch(
   return oneScoreIsExact ? 3 : 0;
 }
 
+export const getLiveMatchPreview = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    const [
+      { data: liveMatches, error: liveMatchesError },
+      { data: participants, error: participantsError },
+    ] = await Promise.all([
+      supabaseAdmin
+        .from("matches")
+        .select(
+          "id,phase,status,kickoff_at,home_score,away_score,home_placeholder,away_placeholder,home:home_team_id(name,sigla,flag),away:away_team_id(name,sigla,flag)",
+        )
+        .eq("status", "live")
+        .order("kickoff_at"),
+      supabaseAdmin
+        .from("leaderboard_entries")
+        .select("id,nickname,avatar_url,total_points,total_hits")
+        .order("total_points", { ascending: false })
+        .order("total_hits", { ascending: false })
+        .order("nickname"),
+    ]);
+    if (liveMatchesError) throw liveMatchesError;
+    if (participantsError) throw participantsError;
+
+    const matches = liveMatches ?? [];
+    if (matches.length === 0) {
+      return { live_matches: [] };
+    }
+
+    const matchIds = matches.map((match) => match.id);
+    const { data: predictions, error: predictionsError } = await supabaseAdmin
+      .from("predictions")
+      .select("match_id,user_id,home_score,away_score")
+      .in("match_id", matchIds);
+    if (predictionsError) throw predictionsError;
+
+    const participantsList = participants ?? [];
+    const currentPositions = new Map(
+      participantsList.map((participant, index) => [participant.id, index + 1]),
+    );
+    const predictionsByMatch = new Map<string, Map<string, (typeof predictions)[number]>>();
+    for (const prediction of predictions ?? []) {
+      let byUser = predictionsByMatch.get(prediction.match_id);
+      if (!byUser) {
+        byUser = new Map();
+        predictionsByMatch.set(prediction.match_id, byUser);
+      }
+      byUser.set(prediction.user_id, prediction);
+    }
+
+    const liveMatchesWithPreview = matches.map((match) => {
+      const hasCurrentScore = match.home_score != null && match.away_score != null;
+      const predictionByUser = predictionsByMatch.get(match.id) ?? new Map();
+
+      const participantsWithPreview = participantsList.map((participant) => {
+        const prediction = predictionByUser.get(participant.id);
+        const provisionalPoints =
+          prediction && hasCurrentScore
+            ? pointsForMatch(match.phase, prediction, {
+                home_score: match.home_score ?? 0,
+                away_score: match.away_score ?? 0,
+              })
+            : 0;
+
+        return {
+          id: participant.id,
+          nickname: participant.nickname,
+          avatar_url: participant.avatar_url,
+          prediction: prediction
+            ? {
+                home_score: prediction.home_score,
+                away_score: prediction.away_score,
+              }
+            : null,
+          provisional_points: provisionalPoints,
+          is_current_user: participant.id === context.userId,
+          total_points: participant.total_points,
+          total_hits: participant.total_hits,
+        };
+      });
+
+      participantsWithPreview.sort(
+        (a, b) =>
+          b.provisional_points - a.provisional_points ||
+          a.nickname.localeCompare(b.nickname, "pt-BR"),
+      );
+
+      const provisionalRanking = [...participantsWithPreview]
+        .map((participant) => ({
+          id: participant.id,
+          nickname: participant.nickname,
+          avatar_url: participant.avatar_url,
+          total_points: participant.total_points,
+          provisional_total_points: participant.total_points + participant.provisional_points,
+          provisional_gain: participant.provisional_points,
+          total_hits: participant.total_hits,
+          current_position: currentPositions.get(participant.id) ?? null,
+          is_current_user: participant.is_current_user,
+        }))
+        .sort(
+          (a, b) =>
+            b.provisional_total_points - a.provisional_total_points ||
+            b.total_hits - a.total_hits ||
+            a.nickname.localeCompare(b.nickname, "pt-BR"),
+        )
+        .map((participant, index) => ({
+          ...participant,
+          simulated_position: index + 1,
+        }));
+
+      return {
+        ...match,
+        home: Array.isArray(match.home) ? (match.home[0] ?? null) : match.home,
+        away: Array.isArray(match.away) ? (match.away[0] ?? null) : match.away,
+        participants: participantsWithPreview.map(
+          ({ total_points: _totalPoints, total_hits: _totalHits, ...participant }) => participant,
+        ),
+        provisional_ranking: provisionalRanking,
+      };
+    });
+
+    return { live_matches: liveMatchesWithPreview };
+  });
+
 export const getMatchParticipantPredictions = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => matchParticipantsSchema.parse(d))

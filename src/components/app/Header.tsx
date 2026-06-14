@@ -36,6 +36,7 @@ export function Header() {
     ? [
         { to: "/dashboard", label: "Dashboard" },
         { to: "/palpites", label: "Meus Palpites" },
+        { to: "/ao-vivo", label: "Ao Vivo" },
         { to: "/ranking", label: "Ranking" },
         { to: "/perfil", label: "Perfil" },
         ...(isAdmin ? [{ to: "/admin", label: "Admin" }] : []),
